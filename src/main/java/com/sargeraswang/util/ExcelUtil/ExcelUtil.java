@@ -8,6 +8,7 @@ import org.apache.commons.collections.comparators.ComparatorChain;
 import org.apache.poi.hssf.usermodel.*;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.ss.util.CellReference;
+import org.apache.poi.xssf.usermodel.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -149,9 +150,9 @@ public class ExcelUtil {
     public static <T> void exportExcel(Map<String,String> headers, Collection<T> dataset, OutputStream out,
                                        String pattern) {
         // 声明一个工作薄
-        HSSFWorkbook workbook = new HSSFWorkbook();
+        XSSFWorkbook workbook = new XSSFWorkbook();
         // 生成一个表格
-        HSSFSheet sheet = workbook.createSheet();
+        XSSFSheet sheet = workbook.createSheet();
 
         write2Sheet(sheet, headers, dataset, pattern);
         try {
@@ -164,15 +165,15 @@ public class ExcelUtil {
     public static void exportExcel(String[][] datalist, OutputStream out,boolean autoColumnWidth) {
         try {
             // 声明一个工作薄
-            HSSFWorkbook workbook = new HSSFWorkbook();
+            XSSFWorkbook workbook = new XSSFWorkbook();
             // 生成一个表格
-            HSSFSheet sheet = workbook.createSheet();
+            XSSFSheet sheet = workbook.createSheet();
 
             for (int i = 0; i < datalist.length; i++) {
                 String[] r = datalist[i];
-                HSSFRow row = sheet.createRow(i);
+                XSSFRow row = sheet.createRow(i);
                 for (int j = 0; j < r.length; j++) {
-                    HSSFCell cell = row.createCell(j);
+                    XSSFCell cell = row.createCell(j);
                     //cell max length 32767
                     if (r[j] != null && r[j].length() > 32767) {
                         r[j] = "--此字段过长(超过32767),已被截断--" + r[j];
@@ -225,10 +226,10 @@ public class ExcelUtil {
             return;
         }
         // 声明一个工作薄
-        HSSFWorkbook workbook = new HSSFWorkbook();
+        XSSFWorkbook workbook = new XSSFWorkbook();
         for (ExcelSheet<T> sheet : sheets) {
             // 生成一个表格
-            HSSFSheet hssfSheet = workbook.createSheet(sheet.getSheetName());
+            XSSFSheet hssfSheet = workbook.createSheet(sheet.getSheetName());
             write2Sheet(hssfSheet, sheet.getHeaders(), sheet.getDataset(), pattern);
         }
         try {
@@ -246,32 +247,38 @@ public class ExcelUtil {
      * @param dataset 数据集合
      * @param pattern 日期格式
      */
-    private static <T> void write2Sheet(HSSFSheet sheet, Map<String,String> headers, Collection<T> dataset,
+    private static <T> void write2Sheet(XSSFSheet  sheet, Map<String,String> headers, Collection<T> dataset,
                                         String pattern) {
         //时间格式默认"yyyy-MM-dd"
         if (isBlank(pattern)){
             pattern = "yyyy-MM-dd";
         }
-        // 产生表格标题行
-        HSSFRow row = sheet.createRow(0);
-        // 标题行转中文
-        Set<String> keys = headers.keySet();
-        Iterator<String> it1 = keys.iterator();
+        XSSFRow row = null;
+        Set<String> keys = null;
         String key = "";    //存放临时键变量
-        int c= 0;   //标题列数
-        while (it1.hasNext()){
-            key = it1.next();
-            if (headers.containsKey(key)) {
-                HSSFCell cell = row.createCell(c);
-                HSSFRichTextString text = new HSSFRichTextString(headers.get(key));
-                cell.setCellValue(text);
-                c++;
+        // 产生表格标题行
+        if (headers != null) {
+            row = sheet.createRow(0);
+            // 标题行转中文
+            keys = headers.keySet();
+            Iterator<String> it1 = keys.iterator();
+            int c = 0;   //标题列数
+            while (it1.hasNext()) {
+                key = it1.next();
+                if (headers.containsKey(key)) {
+                    XSSFCell cell = row.createCell(c);
+                    XSSFRichTextString text = new XSSFRichTextString(headers.get(key));
+                    cell.setCellValue(text);
+                    c++;
+                }
             }
         }
-
         // 遍历集合数据，产生数据行
         Iterator<T> it = dataset.iterator();
         int index = 0;
+        if(headers==null) {
+            index = -1;
+        }
         while (it.hasNext()) {
             index++;
             row = sheet.createRow(index);
@@ -281,26 +288,40 @@ public class ExcelUtil {
                     @SuppressWarnings("unchecked")
                     Map<String, Object> map = (Map<String, Object>) t;
                     int cellNum = 0;
-                    //遍历列名
-                    Iterator<String> it2 = keys.iterator();
-                    while (it2.hasNext()){
-                        key = it2.next();
-                        if (!headers.containsKey(key)) {
-                            LG.error("Map 中 不存在 key [" + key + "]");
-                            continue;
+
+                    if(keys!=null) {
+                        //有标题，遍历列名
+                        Iterator<String> it2 = keys.iterator();
+                        while (it2.hasNext()) {
+                            key = it2.next();
+                            if (!headers.containsKey(key)) {
+                                LG.error("Map 中 不存在 key [" + key + "]");
+                                continue;
+                            }
+                            if (map.containsKey(key)) {
+                                Object value = map.get(key);
+                                XSSFCell cell = row.createCell(cellNum);
+
+                                cellNum = setCellValue(cell, value, pattern, cellNum, null, row);
+
+                                cellNum++;
+                            }
                         }
-                        Object value = map.get(key);
-                        HSSFCell cell = row.createCell(cellNum);
+                    }else{
+                        //无标题
+                        for(Map.Entry<String,Object> entry:map.entrySet()){
+                            XSSFCell cell = row.createCell(cellNum);
 
-                        cellNum = setCellValue(cell,value,pattern,cellNum,null,row);
+                            cellNum = setCellValue(cell, entry.getValue(), pattern, cellNum, null, row);
 
-                        cellNum++;
+                            cellNum++;
+                        }
                     }
                 } else {
                     List<FieldForSortting> fields = sortFieldByAnno(t.getClass());
                     int cellNum = 0;
                     for (int i = 0; i < fields.size(); i++) {
-                        HSSFCell cell = row.createCell(cellNum);
+                        XSSFCell cell = row.createCell(cellNum);
                         Field field = fields.get(i).getField();
                         field.setAccessible(true);
                         Object value = field.get(t);
@@ -314,13 +335,16 @@ public class ExcelUtil {
                 LG.error(e.toString(), e);
             }
         }
-        // 设定自动宽度
-        for (int i = 0; i < headers.size(); i++) {
-            sheet.autoSizeColumn(i);
+        if(headers!=null){
+            // 设定自动宽度
+            for (int i = 0; i < headers.size(); i++) {
+                sheet.autoSizeColumn(i);
+            }
         }
+
     }
 
-    private static int setCellValue(HSSFCell cell,Object value,String pattern,int cellNum,Field field,HSSFRow row){
+    private static int setCellValue(XSSFCell cell,Object value,String pattern,int cellNum,Field field,XSSFRow row){
         String textValue = null;
         if (value instanceof Integer) {
             int intValue = (Integer) value;
@@ -377,7 +401,7 @@ public class ExcelUtil {
             textValue = value == null ? empty : value.toString();
         }
         if (textValue != null) {
-            HSSFRichTextString richString = new HSSFRichTextString(textValue);
+            XSSFRichTextString richString = new XSSFRichTextString(textValue);
             cell.setCellValue(richString);
         }
         return cellNum;
