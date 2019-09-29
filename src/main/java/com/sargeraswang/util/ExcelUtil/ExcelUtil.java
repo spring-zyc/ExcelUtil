@@ -86,9 +86,7 @@ public class ExcelUtil {
      * @return
      */
     private static Object getCellValue(Cell cell) {
-        if (cell == null
-                || (cell.getCellTypeEnum() == CellType.STRING && isBlank(cell
-                .getStringCellValue()))) {
+        if (cell == null) {
             return null;
         }
         CellType cellType = cell.getCellTypeEnum();
@@ -418,8 +416,8 @@ public class ExcelUtil {
      * @return voList
      * @throws RuntimeException
      */
-    public static <T> Collection<T> importExcel(Class<T> clazz, InputStream inputStream,
-                                                String pattern, ExcelLogs logs, Integer... arrayCount) {
+    public static <T> List<T> importExcel(Class<T> clazz, InputStream inputStream,
+                                                String pattern, ExcelLogs logs, boolean hasHeader, Integer... arrayCount) {
         Workbook workBook;
         try {
             workBook = WorkbookFactory.create(inputStream);
@@ -437,7 +435,7 @@ public class ExcelUtil {
 
             while (rowIterator.hasNext()) {
                 Row row = rowIterator.next();
-                if (row.getRowNum() == 0) {
+                if (hasHeader && row.getRowNum() == 0) {
                     if (clazz == Map.class) {
                         // 解析map用的key,就是excel标题行
                         Iterator<Cell> cellIterator = row.cellIterator();
@@ -467,91 +465,99 @@ public class ExcelUtil {
                 StringBuilder log = new StringBuilder();
                 if (clazz == Map.class) {
                     Map<String, Object> map = new HashMap<>();
-                    for (String k : titleMap.keySet()) {
-                        Integer index = titleMap.get(k);
-                        Cell cell = row.getCell(index);
-                        // 判空
-                        if (cell == null) {
-                            map.put(k, null);
-                        } else {
-                            cell.setCellType(CellType.STRING);
-                            String value = cell.getStringCellValue();
-                            map.put(k, value);
-                        }
-                    }
-                    list.add((T) map);
-
-                } else {
-                    T t = clazz.newInstance();
-                    int arrayIndex = 0;// 标识当前第几个数组了
-                    int cellIndex = 0;// 标识当前读到这一行的第几个cell了
-                    List<FieldForSortting> fields = sortFieldByAnno(clazz);
-                    for (FieldForSortting ffs : fields) {
-                        Field field = ffs.getField();
-                        field.setAccessible(true);
-                        if (field.getType().isArray()) {
-                            Integer count = arrayCount[arrayIndex];
-                            Object[] value;
-                            if (field.getType().equals(String[].class)) {
-                                value = new String[count];
+                        for (String k : titleMap.keySet()) {
+                            Integer index = titleMap.get(k);
+                            Cell cell = row.getCell(index);
+                            // 判空
+                            if (cell == null) {
+                                map.put(k, null);
                             } else {
-                                // 目前只支持String[]和Double[]
-                                value = new Double[count];
+                                cell.setCellType(CellType.STRING);
+                                String value = cell.getStringCellValue();
+                                map.put(k, value);
                             }
-                            for (int i = 0; i < count; i++) {
+                        }
+                        list.add((T) map);
+
+                } else if (clazz == List.class) {
+                    List<Object> rowList = new ArrayList<>();
+                    Iterator<Cell> i = row.cellIterator();
+                    while (i.hasNext()) {
+                        Cell cell = i.next();
+                        rowList.add(getCellValue(cell));
+                    }
+                    list.add((T)rowList);
+                } else{
+                        T t = clazz.newInstance();
+                        int arrayIndex = 0;// 标识当前第几个数组了
+                        int cellIndex = 0;// 标识当前读到这一行的第几个cell了
+                        List<FieldForSortting> fields = sortFieldByAnno(clazz);
+                        for (FieldForSortting ffs : fields) {
+                            Field field = ffs.getField();
+                            field.setAccessible(true);
+                            if (field.getType().isArray()) {
+                                Integer count = arrayCount[arrayIndex];
+                                Object[] value;
+                                if (field.getType().equals(String[].class)) {
+                                    value = new String[count];
+                                } else {
+                                    // 目前只支持String[]和Double[]
+                                    value = new Double[count];
+                                }
+                                for (int i = 0; i < count; i++) {
+                                    Cell cell = row.getCell(cellIndex);
+                                    String errMsg = validateCell(cell, field, cellIndex);
+                                    if (isBlank(errMsg)) {
+                                        value[i] = getCellValue(cell);
+                                    } else {
+                                        log.append(errMsg);
+                                        log.append(";");
+                                        logs.setHasError(true);
+                                    }
+                                    cellIndex++;
+                                }
+                                field.set(t, value);
+                                arrayIndex++;
+                            } else {
                                 Cell cell = row.getCell(cellIndex);
                                 String errMsg = validateCell(cell, field, cellIndex);
                                 if (isBlank(errMsg)) {
-                                    value[i] = getCellValue(cell);
-                                } else {
+                                    Object value = null;
+                                    // 处理特殊情况,Excel中的String,转换成Bean的Date
+                                    if (field.getType().equals(Date.class)
+                                            && cell.getCellTypeEnum() == CellType.STRING) {
+                                        Object strDate = getCellValue(cell);
+                                        try {
+                                            value = new SimpleDateFormat(pattern).parse(strDate.toString());
+                                        } catch (ParseException e) {
+
+                                            errMsg =
+                                                    MessageFormat.format("the cell [{0}] can not be converted to a date ",
+                                                            CellReference.convertNumToColString(cell.getColumnIndex()));
+                                        }
+                                    } else {
+                                        value = getCellValue(cell);
+                                        // 处理特殊情况,excel的value为String,且bean中为其他,且defaultValue不为空,那就=defaultValue
+                                        ExcelCell annoCell = field.getAnnotation(ExcelCell.class);
+                                        if (value instanceof String && !field.getType().equals(String.class)
+                                                && isNotBlank(annoCell.defaultValue())) {
+                                            value = annoCell.defaultValue();
+                                        }
+                                    }
+                                    field.set(t, value);
+                                }
+                                if (isNotBlank(errMsg)) {
                                     log.append(errMsg);
                                     log.append(";");
                                     logs.setHasError(true);
                                 }
                                 cellIndex++;
                             }
-                            field.set(t, value);
-                            arrayIndex++;
-                        } else {
-                            Cell cell = row.getCell(cellIndex);
-                            String errMsg = validateCell(cell, field, cellIndex);
-                            if (isBlank(errMsg)) {
-                                Object value = null;
-                                // 处理特殊情况,Excel中的String,转换成Bean的Date
-                                if (field.getType().equals(Date.class)
-                                        && cell.getCellTypeEnum() == CellType.STRING) {
-                                    Object strDate = getCellValue(cell);
-                                    try {
-                                        value = new SimpleDateFormat(pattern).parse(strDate.toString());
-                                    } catch (ParseException e) {
-
-                                        errMsg =
-                                                MessageFormat.format("the cell [{0}] can not be converted to a date ",
-                                                        CellReference.convertNumToColString(cell.getColumnIndex()));
-                                    }
-                                } else {
-                                    value = getCellValue(cell);
-                                    // 处理特殊情况,excel的value为String,且bean中为其他,且defaultValue不为空,那就=defaultValue
-                                    ExcelCell annoCell = field.getAnnotation(ExcelCell.class);
-                                    if (value instanceof String && !field.getType().equals(String.class)
-                                            && isNotBlank(annoCell.defaultValue())) {
-                                        value = annoCell.defaultValue();
-                                    }
-                                }
-                                field.set(t, value);
-                            }
-                            if (isNotBlank(errMsg)) {
-                                log.append(errMsg);
-                                log.append(";");
-                                logs.setHasError(true);
-                            }
-                            cellIndex++;
                         }
+                        list.add(t);
+                        logList.add(new ExcelLog(t, log.toString(), row.getRowNum() + 1));
                     }
-                    list.add(t);
-                    logList.add(new ExcelLog(t, log.toString(), row.getRowNum() + 1));
                 }
-            }
             logs.setLogList(logList);
         } catch (InstantiationException e) {
             throw new RuntimeException(MessageFormat.format("can not instance class:{0}",
